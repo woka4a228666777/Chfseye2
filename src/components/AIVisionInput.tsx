@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Product } from '../types';
 import AIVisionService from '../services/aiVisionService';
 
@@ -13,366 +13,180 @@ const AIVisionInput: React.FC<AIVisionInputProps> = ({ onAddProducts, onBack }) 
   const [error, setError] = useState<string>('');
   const [detectedProducts, setDetectedProducts] = useState<Product[]>([]);
   const [processingStage, setProcessingStage] = useState<string>('');
-  const [apiUsed, setApiUsed] = useState<string>('');
+  const [serverStatus, setServerStatus] = useState<{loaded: boolean, status: string, type: string, error?: string} | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const getApiDisplayName = (api: string): string => {
+    const apiNames: Record<string, string> = {
+      'Llama-3.2-11B-Vision': 'Llama 3.2 Vision AI',
+      'fallback': 'резервный алгоритм',
+      'demo': 'тестовый режим'
+    };
+    return apiNames[api] || api;
+  };
+
+  // Опрос статуса сервера каждые 3 секунды
+  useEffect(() => {
+    const updateStatus = async () => {
+      const status = await AIVisionService.checkServerStatus();
+      setServerStatus(status);
+    };
+    updateStatus();
+    const interval = setInterval(updateStatus, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Сброс предыдущих результатов
     setError('');
     setDetectedProducts([]);
-    setApiUsed('');
     setIsProcessing(true);
 
     try {
-      // Показываем превью изображения
+      // Превью
       const reader = new FileReader();
-      reader.onload = (e) => {
-        setSelectedImage(e.target?.result as string);
-      };
+      reader.onload = (e) => setSelectedImage(e.target?.result as string);
       reader.readAsDataURL(file);
 
-      // Начинаем обработку с прогрессом
-      setProcessingStage('Анализируем изображение...');
-      
-      const result = await AIVisionService.analyzeImage(file, (message) => {
-        setProcessingStage(message);
+      setProcessingStage('Подготовка изображения...');
+      const result = await AIVisionService.analyzeImage(file, (msg) => {
+        setProcessingStage(msg);
       });
 
-      setApiUsed(result.modelUsed || 'demo');
-      
-      const products: Product[] = result.products.map((detection, index) => ({
-        id: `ai-detected-${Date.now()}-${index}`,
-        name: detection.name,
-        category: detection.category || 'other',
+      const products: Product[] = result.products.map((p, i) => ({
+        id: `ai-${Date.now()}-${i}`,
+        name: p.name,
+        category: p.category || 'other',
         status: 'full',
-        confidence: detection.confidence,
+        confidence: p.confidence,
         source: 'ai-vision'
       }));
 
       setDetectedProducts(products);
-      
-      if (products.length > 0) {
-        setError(`✅ Успешно распознано ${products.length} продуктов с помощью ${getApiDisplayName(apiUsed)}!`);
-      } else {
-        setError('❌ Не удалось распознать продукты на фото. Попробуйте другое изображение.');
+      if (products.length === 0) {
+        setError('❌ Нейросеть не нашла продуктов на фото. Попробуйте другой ракурс.');
+      } else if (result.modelUsed) {
+        // Показываем какой AI сработал
+        console.log(`[AIVisionInput] Использована модель: ${result.modelUsed}`);
+        setProcessingStage(`Успешно! Использован: ${result.modelUsed}`);
+        setTimeout(() => setProcessingStage(''), 3000);
       }
-      
+
     } catch (err) {
-      console.error('AI Vision error:', err);
-      setError(err instanceof Error ? err.message : 'Ошибка распознавания изображения');
+      console.error(err);
+      setError(err instanceof Error ? err.message : 'Ошибка при анализе фото');
     } finally {
       setIsProcessing(false);
       setProcessingStage('');
     }
   };
 
-  const getApiDisplayName = (api: string): string => {
-    const apiNames: Record<string, string> = {
-      'huggingface': 'Hugging Face AI',
-      'google-vision': 'Google Vision',
-      'fallback': 'резервный алгоритм',
-      'simulation': 'тестовый режим'
-    };
-    return apiNames[api] || api;
-  };
-
-  const handleAddProducts = () => {
+  const handleAddAll = () => {
     if (detectedProducts.length > 0) {
       onAddProducts(detectedProducts);
-      setError(`✅ Добавлено ${detectedProducts.length} продуктов!`);
-      
-      // Автоматический сброс через 2 секунды
-      setTimeout(() => {
-        setSelectedImage(null);
-        setDetectedProducts([]);
-        setError('');
-      }, 2000);
-    }
-  };
-
-  const clearResults = () => {
-    setSelectedImage(null);
-    setDetectedProducts([]);
-    setError('');
-    setApiUsed('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      const file = files[0];
-      if (file.type.startsWith('image/')) {
-        // Создаем искусственное событие для обработки файла
-        const event = {
-          target: { files: [file] }
-        } as unknown as React.ChangeEvent<HTMLInputElement>;
-        handleImageUpload(event);
-      }
+      onBack();
     }
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-4">
-      <div className="flex items-center mb-6">
-        <button
-          onClick={onBack}
-          className="mr-4 p-2 hover:bg-gray-100 rounded-full transition-colors"
-        >
-          ← Назад
-        </button>
-        <h2 className="text-2xl font-bold text-gray-900">🤖 Умное распознавание продуктов</h2>
+    <div className="max-w-4xl mx-auto p-4 space-y-6">
+      <div className="flex items-center justify-between">
+        <button onClick={onBack} className="text-blue-600 hover:underline">← Назад</button>
+        <h2 className="text-2xl font-bold">🤖 AI-анализ продуктов (v3)</h2>
+        <div className="flex items-center space-x-2">
+          <div className={`w-3 h-3 rounded-full ${serverStatus?.loaded ? 'bg-green-500' : 'bg-yellow-500'}`}></div>
+          <span className="text-sm text-gray-600">
+            {serverStatus?.loaded ? `${serverStatus.type}: Ready` : 'Загрузка нейросети...'}
+          </span>
+        </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-lg p-6 space-y-6">
-        {/* Статус обработки */}
-        {isProcessing && (
-          <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p className="text-gray-600 font-medium">{processingStage}</p>
-            <p className="text-sm text-gray-500 mt-2">Используем современные нейросети для анализа...</p>
-          </div>
-        )}
-
-        {/* Сообщения об ошибках/успехе */}
-        {error && (
-          <div className={`p-4 rounded-lg border ${
-            error.includes('✅') 
-              ? 'bg-green-50 text-green-800 border-green-200' 
-              : error.includes('❌')
-              ? 'bg-red-50 text-red-800 border-red-200'
-              : 'bg-blue-50 text-blue-800 border-blue-200'
-          }`}>
-            <div className="flex items-center">
-              <span className="text-lg mr-2">{error.includes('✅') ? '✅' : error.includes('❌') ? '❌' : 'ℹ️'}</span>
-              <span>{error}</span>
-            </div>
-            {apiUsed && (
-              <p className="text-sm opacity-75 mt-1">
-                Использован: {getApiDisplayName(apiUsed)}
+      <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100">
+        {!serverStatus?.loaded && (
+          <div className="mb-4 bg-blue-50 border border-blue-200 text-blue-800 p-4 rounded-lg flex items-start">
+            <span className="mr-2">ℹ️</span>
+            <div>
+              <p className="font-bold">Инициализация AI:</p>
+              <p className="text-sm">Мы загружаем легкую нейросеть прямо в ваш браузер или подключаем облачный API. Это происходит один раз.</p>
+              <p className="text-xs mt-1 italic">
+                Теперь распознавание работает <strong>быстрее и точнее</strong> с поддержкой LogMeal API.
               </p>
-            )}
+            </div>
           </div>
         )}
 
-        {/* Загрузка изображения */}
-        {!selectedImage && !isProcessing && (
-          <div 
-            className="border-2 border-dashed border-gray-300 rounded-xl p-12 text-center cursor-pointer hover:border-blue-400 transition-colors"
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <div className="w-20 h-20 mx-auto mb-6 bg-blue-50 rounded-full flex items-center justify-center">
-              <span className="text-3xl">📸</span>
+        {isProcessing ? (
+          <div className="text-center py-12 space-y-4">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+            <p className="font-medium text-gray-700">{processingStage}</p>
+            <div className="space-y-2">
+              <p className="text-xs text-gray-500 italic">
+                {serverStatus?.type?.includes('Cloud') 
+                  ? 'Облачный AI анализирует ваше фото...' 
+                  : 'Генерация на CPU может занимать от 1 до 3 минут.'}
+              </p>
+              <p className="text-xs text-blue-500 animate-pulse">
+                Пожалуйста, не закрывайте страницу...
+              </p>
             </div>
-            <h3 className="text-xl font-semibold text-gray-800 mb-2">Загрузите фото продуктов</h3>
-            <p className="text-gray-600 mb-4">Перетащите изображение или нажмите для выбора файла</p>
-            
-            <div className="bg-gray-50 rounded-lg p-4 max-w-md mx-auto">
-              <p className="text-sm text-gray-600 mb-2">📷 Поддерживаемые форматы:</p>
-              <div className="flex justify-center space-x-4 text-xs text-gray-500">
-                <span>JPEG</span>
-                <span>PNG</span>
-                <span>WEBP</span>
-                <span>до 10MB</span>
-              </div>
-            </div>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              onChange={handleImageUpload}
-              className="hidden"
-            />
           </div>
-        )}
-
-        {/* Результаты распознавания */}
-        {selectedImage && !isProcessing && (
+        ) : (
           <>
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-semibold text-gray-900">Результаты анализа</h3>
-              <div className="flex space-x-3">
-                <button
-                  onClick={clearResults}
-                  className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                >
-                  📷 Новое фото
-                </button>
-                {detectedProducts.length > 0 && (
-                  <button
-                    onClick={handleAddProducts}
-                    className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+            {!selectedImage ? (
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                className="border-2 border-dashed border-gray-300 rounded-xl p-12 text-center cursor-pointer hover:bg-blue-50 transition-colors"
+              >
+                <div className="text-4xl mb-4">📸</div>
+                <p className="text-gray-600">Нажмите, чтобы загрузить фото продуктов</p>
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  onChange={handleImageUpload} 
+                  accept="image/*" 
+                  className="hidden" 
+                />
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <img src={selectedImage} alt="Preview" className="w-full h-64 object-contain rounded-lg bg-gray-50 border" />
+                  <button 
+                    onClick={() => { setSelectedImage(null); setDetectedProducts([]); }}
+                    className="mt-2 text-sm text-gray-500 hover:text-red-500"
                   >
-                    ✅ Добавить все
+                    Удалить фото
                   </button>
-                )}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-              {/* Изображение */}
-              <div className="space-y-4">
-                <div className="border-2 border-gray-200 rounded-xl overflow-hidden">
-                  <img
-                    src={selectedImage}
-                    alt="Анализируемое изображение"
-                    className="w-full h-auto max-h-96 object-contain mx-auto"
-                  />
                 </div>
                 
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="flex items-center">
-                    <span className="text-blue-600 text-lg mr-2">📊</span>
-                    <div>
-                      <p className="text-sm font-medium text-blue-800">Статистика анализа</p>
-                      <p className="text-xs text-blue-600">
-                        Распознано: {detectedProducts.length} продуктов | 
-                        API: {getApiDisplayName(apiUsed)}
-                      </p>
-                    </div>
+                <div className="space-y-4">
+                  <h3 className="font-semibold border-b pb-2">Результаты распознавания:</h3>
+                  {error && <div className="text-red-500 text-sm">{error}</div>}
+                  
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {detectedProducts.map((p, i) => (
+                      <div key={i} className="flex items-center justify-between p-2 bg-green-50 rounded border border-green-100">
+                        <span className="font-medium">{p.name}</span>
+                        <span className="text-xs bg-white px-2 py-1 rounded text-gray-500 uppercase">{p.category}</span>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              </div>
 
-              {/* Список продуктов */}
-              <div className="space-y-4">
-                <h4 className="font-semibold text-gray-900 text-lg">Распознанные продукты</h4>
-                
-                {detectedProducts.length > 0 ? (
-                  <div className="bg-green-50 border border-green-200 rounded-xl p-4">
-                    <div className="flex items-center mb-4">
-                      <span className="text-green-600 text-xl mr-2">✅</span>
-                      <h5 className="font-medium text-green-800">Автоматически распознано:</h5>
-                    </div>
-                    
-                    <div className="space-y-3 max-h-96 overflow-y-auto">
-                      {detectedProducts.map((product, index) => (
-                        <div 
-                          key={product.id} 
-                          className="flex items-center justify-between p-3 bg-white rounded-lg border border-green-100 shadow-sm"
-                        >
-                          <div className="flex-1">
-                            <div className="flex items-center space-x-3">
-                              <span className="text-sm font-medium text-gray-500">{index + 1}.</span>
-                              <div>
-                                <p className="font-medium text-gray-900 text-sm">{product.name}</p>
-                                <div className="flex items-center space-x-2 text-xs text-gray-500">
-                                  <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded">
-                                    {product.category}
-                                  </span>
-                                  {(product as any).confidence && (
-                                    <span className="bg-green-100 text-green-700 px-2 py-1 rounded">
-                                      {(product as any).confidence && (
-                                        <span className="bg-green-100 text-green-700 px-2 py-1 rounded">
-                                          {Math.round((product as any).confidence * 100)}%
-                                        </span>
-                                      )}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                          <span className="text-xs text-gray-400">AI</span>
-                        </div>
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={handleAddProducts}
-                      className="w-full mt-4 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
+                  {detectedProducts.length > 0 && (
+                    <button 
+                      onClick={handleAddAll}
+                      className="w-full py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-colors"
                     >
-                      📥 Добавить все продукты ({detectedProducts.length})
+                      Добавить все продукты ({detectedProducts.length})
                     </button>
-                  </div>
-                ) : (
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6 text-center">
-                    <div className="text-yellow-600 text-4xl mb-3">🔍</div>
-                    <p className="text-yellow-800 font-medium mb-2">Продукты не найдены</p>
-                    <p className="text-yellow-700 text-sm">
-                      Попробуйте другое фото с лучшим освещением и четкими продуктами
-                    </p>
-                  </div>
-                )}
-
-                <button
-                  onClick={onBack}
-                  className="w-full px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                >
-                  ← Вернуться назад
-                </button>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </>
         )}
-      </div>
-
-      {/* Информационная панель */}
-      <div className="mt-8 bg-white rounded-xl shadow-lg p-6">
-        <h3 className="text-xl font-semibold text-gray-900 mb-6">🎯 Как добиться лучших результатов</h3>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded-r">
-              <h4 className="font-medium text-blue-800 mb-2">✅ Что делать:</h4>
-              <ul className="space-y-1 text-sm text-blue-700">
-                <li>• Хорошее естественное освещение</li>
-                <li>• Четкий фокус на продуктах</li>
-                <li>• Продукты отдельно друг от друга</li>
-                <li>• Крупный план упаковки/этикетки</li>
-                <li>• Фон без отвлекающих элементов</li>
-              </ul>
-            </div>
-
-            <div className="bg-green-50 border-l-4 border-green-400 p-4 rounded-r">
-              <h4 className="font-medium text-green-800 mb-2">🚀 Технологии:</h4>
-              <ul className="space-y-1 text-sm text-green-700">
-                <li>• Современные нейросети AI</li>
-                <li>• Компьютерное зрение</li>
-                <li>• Машинное обучение</li>
-                <li>• Мульти-API подход</li>
-                <li>• Автоматическая категоризация</li>
-              </ul>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="bg-red-50 border-l-4 border-red-400 p-4 rounded-r">
-              <h4 className="font-medium text-red-800 mb-2">❌ Избегайте:</h4>
-              <ul className="space-y-1 text-sm text-red-700">
-                <li>• Слишком темные фото</li>
-                <li>• Размытые изображения</li>
-                <li>• Сильные блики/тени</li>
-                <li>• Много продуктов в куче</li>
-                <li>• Сложный фон с узорами</li>
-              </ul>
-            </div>
-
-            <div className="bg-purple-50 border-l-4 border-purple-400 p-4 rounded-r">
-              <h4 className="font-medium text-purple-800 mb-2">📊 Точность:</h4>
-              <ul className="space-y-1 text-sm text-purple-700">
-                <li>• До 95% для четких этикеток</li>
-                <li>• 80-90% для свежих продуктов</li>
-                <li>• Автоматическая проверка</li>
-                <li>• Уверенность каждого распознавания</li>
-                <li>• Постоянное улучшение алгоритмов</li>
-              </ul>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );

@@ -1,325 +1,324 @@
-import axios from 'axios';
-import { Client } from '@gradio/client';
-
-// Интерфейсы для типизации
-interface DetectedProduct {
-  id: string;
-  name: string;
-  category: string;
-  confidence: number;
-  boundingBox?: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-}
+// Конфигурация AI сервисов
+// Теперь используем TensorFlow.js прямо в браузере!
+// Это бесплатно, работает без интернета и не требует API ключей.
 
 interface AIVisionResult {
-  products: DetectedProduct[];
+  products: {
+    name: string;
+    category: string;
+    confidence: number;
+    id?: string;
+  }[];
   success: boolean;
   confidence: number;
-  processingTime?: number;
+  processingTime: number;
   modelUsed?: string;
+  rawCaption?: string;
 }
 
-// Конфигурация AI сервисов
-const AI_CONFIG = {
-  // Основной сервис - Hugging Face Multimodal OCR через MCP
-  HUGGINGFACE_OCR_API: 'https://prithivmlmods-multimodal-ocr.hf.space/gradio_api/mcp/',
-  
-  // Настройки
-  TIMEOUT: 30000,
-  RETRY_ATTEMPTS: 2
-};
+declare global {
+  interface Window {
+    cocoSsd: any;
+  }
+}
 
 class AIVisionService {
-  //// Инициализация сервиса
-  static init() {
-    console.log('[AIVisionService] Сервис инициализирован с Hugging Face Multimodal OCR');
+  private static model: any = null;
+
+  private static getApiKey() {
+    let key = import.meta.env.VITE_LOGMEAL_API_KEY;
+    if (key) {
+      key = key.trim(); // Убираем возможные пробелы/переносы строк
+      console.log('[AIVisionService] API Ключ найден. Длина:', key.length, 'Первые 4 символа:', key.substring(0, 4));
+    } else {
+      console.log('[AIVisionService] API Ключ ОТСУТСТВУЕТ в import.meta.env');
+    }
+    return key;
   }
 
-  // Основной метод для анализа изображения
-  static async analyzeImage(imageFile: File, onProgress?: (message: string) => void): Promise<AIVisionResult> {
+  static async init() {
+    console.log('[AIVisionService] Инициализация TensorFlow.js COCO-SSD...');
+    try {
+      if (!this.model && window.cocoSsd) {
+        this.model = await window.cocoSsd.load();
+        console.log('[AIVisionService] Модель загружена успешно');
+      }
+    } catch (e) {
+      console.error('[AIVisionService] Ошибка загрузки модели:', e);
+    }
+  }
+
+  // Проверка статуса
+  static async checkServerStatus(): Promise<{loaded: boolean, status: string, type: string, error?: string}> {
+    const key = this.getApiKey();
+    const hasLogMealKey = !!key && key !== 'YOUR_LOGMEAL_API_KEY_HERE' && key.length > 5;
+    
+    if (hasLogMealKey) {
+      return { loaded: true, status: 'Ready', type: 'LogMeal API (Cloud AI)' };
+    }
+
+    if (this.model) {
+      return { loaded: true, status: 'Ready', type: 'Browser-side AI (Fallback)' };
+    }
+    if (window.cocoSsd) {
+      await this.init();
+      return { loaded: !!this.model, status: this.model ? 'Ready' : 'Loading...', type: 'Browser-side AI' };
+    }
+    return { loaded: false, status: 'Scripts Missing', type: 'Browser-side AI' };
+  }
+
+  // Анализ изображения
+  static async analyzeImage(imageFile: File, onProgress?: (msg: string) => void): Promise<AIVisionResult> {
+    const key = this.getApiKey();
+    const hasLogMealKey = !!key && key !== 'YOUR_LOGMEAL_API_KEY_HERE' && key.length > 5;
+
+    console.log('[AIVisionService] analyzeImage called. hasLogMealKey:', hasLogMealKey);
+
+    if (hasLogMealKey) {
+      try {
+        return await this.analyzeWithLogMeal(imageFile, onProgress, key);
+      } catch (e) {
+        console.warn('[AIVisionService] LogMeal failed, falling back to local...', e);
+        return this.analyzeLocally(imageFile, onProgress);
+      }
+    }
+
+    return this.analyzeLocally(imageFile, onProgress);
+  }
+
+  // Анализ через LogMeal API
+  private static async analyzeWithLogMeal(imageFile: File, onProgress?: (msg: string) => void, apiKeyOverride?: string): Promise<AIVisionResult> {
     const startTime = Date.now();
+    const apiKey = apiKeyOverride || this.getApiKey();
+    onProgress?.('Отправка фото в LogMeal Cloud AI (Segmentation)...');
+    
+    console.log('[AIVisionService] v5: Запуск Segmentation API для распознавания нескольких объектов...');
     
     try {
-      onProgress?.('Подключаемся к Hugging Face Multimodal OCR...');
-      const result = await this.callHuggingFaceOCR(imageFile);
-      
-      return {
-        ...result,
-        processingTime: Date.now() - startTime,
-        modelUsed: 'huggingface-ocr'
-      };
-      
-    } catch (error) {
-      console.error('[AIVisionService] Ошибка анализа изображения:', error);
-      
-      // Возвращаем демо-результат в случае ошибки
-      return {
-        ...this.getDemoResult(),
-        processingTime: Date.now() - startTime,
-        modelUsed: 'demo'
-      };
-    }
-  }
-
-  // Вызов Hugging Face Multimodal OCR API через Gradio Client
-  private static async callHuggingFaceOCR(imageFile: File): Promise<AIVisionResult> {
-    try {
-      console.log('[AIVisionService] Подключаемся к Hugging Face Multimodal OCR через Gradio Client');
-      
-      // Создаем клиент для Multimodal OCR
-      const client = await Client.connect("prithivMLmods/Multimodal-OCR");
-      
-      // Вызываем API для генерации описания изображения
-      const result = await client.predict("/generate_image", {
-        model_name: "Nanonets-OCR2-3B",
-        text: "Write all what you see, only eatable and drinkable on the photo. without water drops etc. Example(apple, milk, lemon)",
-        image: imageFile,
-        max_new_tokens: 1024,
-        temperature: 0.7,
-        top_p: 0.9,
-        top_k: 50,
-        repetition_penalty: 1.1,
-        gpu_timeout: 60
-      });
-      
-      console.log('[AIVisionService] Hugging Face Multimodal OCR ответил успешно');
-      
-      // Обрабатываем результат
-      const responseData = {
-        data: result.data
-      };
-      
-      return this.processHuggingFaceResponse(responseData);
-      
-    } catch (error) {
-      console.error('[AIVisionService] Hugging Face Multimodal OCR ошибка:', error);
-      
-      // В случае ошибки используем демо-режим
-      console.log('[AIVisionService] Переходим в демо-режим');
-      return this.getDemoResult();
-    }
-  }
-  
-  // Резервный метод для старого API формата
-  private static async callLegacyHuggingFaceAPI(imageFile: File): Promise<AIVisionResult> {
-    try {
-      const base64Image = await this.fileToBase64(imageFile);
-      
-      // Формируем правильный MCP запрос для Multimodal OCR
-      const requestBody = {
-        jsonrpc: "2.0",
-        method: "tools/call",
-        params: {
-          name: "Multimodal_OCR_generate_image",
-          arguments: {
-            image: base64Image,
-            query: "Опиши что находится на изображении, перечисли все продукты питания"
-          }
-        },
-        id: 1
-      };
-      
-      console.log('[AIVisionService] Пробуем старый API формат...');
-      
-      const response = await axios.post(
-        'https://prithivmlmods-multimodal-ocr.hf.space/gradio_api/mcp/',
-        requestBody,
-        { 
-          timeout: AI_CONFIG.TIMEOUT,
+      const createRequest = async (authHeader: string) => {
+        const formData = new FormData();
+        formData.append('image', imageFile);
+        // Используем v2/image/segmentation/complete для распознавания всех объектов
+        return fetch('https://api.logmeal.com/v2/image/segmentation/complete', {
+          method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream'
+            'Authorization': authHeader,
+            'Accept': 'application/json'
+          },
+          body: formData
+        });
+      };
+
+      // Пробуем сначала с Bearer
+      let response = await createRequest(`Bearer ${apiKey}`);
+
+      // Если 401, пробуем Token
+      if (response.status === 401) {
+        console.warn('[AIVisionService] 401 с Bearer, пробуем Token...');
+        response = await createRequest(`Token ${apiKey}`);
+      }
+
+      if (response.status === 401) {
+        const errJson = await response.json().catch(() => ({}));
+        console.error('[AIVisionService] 401 Unauthorized! Оба метода (Bearer/Token) отклонены.');
+        console.error('[AIVisionService] Ответ сервера:', errJson);
+        throw new Error(`API ключ LogMeal не авторизован (401): ${errJson.message || 'Проверьте ключ'}`);
+      }
+
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error('[AIVisionService] LogMeal API Error:', errText);
+        throw new Error(`LogMeal API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('[AIVisionService] LogMeal Segmentation Response:', data);
+
+      const products: any[] = [];
+
+      // Обработка формата v2/image/segmentation/complete
+      // Извлекаем все распознанные сегменты (все продукты на фото)
+      if (data.segmentation_results) {
+        data.segmentation_results.forEach((seg: any, idx: number) => {
+          if (seg.recognition_results && seg.recognition_results.length > 0) {
+            // Берем самый вероятный вариант для каждого сегмента
+            const bestResult = seg.recognition_results[0];
+            
+            // Проверяем на дубликаты (иногда один объект сегментируется дважды)
+            const exists = products.some(p => p.name.toLowerCase() === this.translateToRussian(bestResult.name).toLowerCase());
+            
+            if (!exists) {
+              products.push({
+                name: this.translateToRussian(bestResult.name),
+                category: this.categorizeProduct(bestResult.name),
+                confidence: bestResult.prob || 0.9,
+                id: `logmeal-seg-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 5)}`
+              });
+            }
           }
-        }
-      );
-      
-      console.log('[AIVisionService] Старый API формат сработал');
-      return this.processHuggingFaceResponse(response.data);
-      
+        });
+      } else if (data.recognition_results) {
+        // Fallback если вдруг вернулся формат обычного recognition
+        data.recognition_results.forEach((res: any) => {
+          products.push({
+            name: this.translateToRussian(res.name),
+            category: this.categorizeProduct(res.name),
+            confidence: res.prob || 0.9,
+            id: `logmeal-rec-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+          });
+        });
+      }
+
+      console.log('[AIVisionService] Итого распознано продуктов:', products.length, products);
+
+      return {
+        products,
+        success: true,
+        confidence: products.length > 0 ? Math.max(...products.map((p: any) => p.confidence)) : 0,
+        processingTime: Date.now() - startTime,
+        modelUsed: 'LogMeal Cloud AI (Multi-Object Segmentation)'
+      };
+
     } catch (error) {
-      console.error('[AIVisionService] Ошибка в старом API формате:', error);
+      console.error('[AIVisionService] Ошибка LogMeal API:', error);
       throw error;
     }
   }
 
-  // Обработка ответа от Hugging Face Multimodal OCR
-  private static processHuggingFaceResponse(data: any): AIVisionResult {
-    const products: DetectedProduct[] = [];
-    
+  // Вынес локальный анализ в отдельный метод для удобства fallback
+  private static async analyzeLocally(imageFile: File, onProgress?: (msg: string) => void): Promise<AIVisionResult> {
+    const startTime = Date.now();
     try {
-      // Multimodal OCR возвращает описание изображения в текстовом формате
-      // Пример ответа: "На изображении видны яблоки, молоко, хлеб и сыр в холодильнике"
-      const description = data?.data?.[0] || '';
-      console.log('[AIVisionService] Описание от Multimodal OCR:', description);
-      
-      // Извлекаем продукты из текстового описания
-      const extractedProducts = this.extractProductsFromDescription(description);
-      
-      // Преобразуем в формат DetectedProduct
-      extractedProducts.forEach(productName => {
-        const translatedName = this.translateAndCategorize(productName);
-        
-        products.push({
-          id: this.generateProductId(translatedName),
-          name: translatedName,
-          category: this.categorizeProduct(translatedName),
-          confidence: 0.85 // Высокая уверенность для OCR
-        });
-      });
-      
-    } catch (error) {
-      console.error('[AIVisionService] Ошибка обработки ответа Multimodal OCR:', error);
-    }
-    
-    return {
-      products: this.removeDuplicates(products),
-      success: products.length > 0,
-      confidence: products.length > 0 ? 0.8 : 0
-    };
-  }
-  
-  // Извлечение продуктов из текстового описания
-  private static extractProductsFromDescription(description: string): string[] {
-    const products: string[] = [];
-    
-    // Список common продуктов для поиска в описании
-    const commonProducts = [
-      'яблоко', 'банан', 'апельсин', 'молоко', 'хлеб', 'сыр', 'йогурт', 
-      'мясо', 'курица', 'рыба', 'овощи', 'фрукты', 'колбаса', 'сок',
-      'вода', 'яйца', 'масло', 'кетчуп', 'майонез', 'сметана', 'творог'
-    ];
-    
-    // Ищем продукты в описании
-    commonProducts.forEach(product => {
-      if (description.toLowerCase().includes(product)) {
-        products.push(product);
+      if (!this.model) {
+        onProgress?.('Загрузка локальной нейросети...');
+        await this.init();
       }
-    });
-    
-    // Дополнительно пытаемся извлечь продукты через регулярные выражения
-    const productRegex = /(\b[а-яё]+\b)(?=\s*(,|и|в|на|с|из))/gi;
-    let match;
-    
-    while ((match = productRegex.exec(description)) !== null) {
-      const potentialProduct = match[1].toLowerCase();
-      if (potentialProduct.length > 3 && !products.includes(potentialProduct)) {
-        products.push(potentialProduct);
-      }
+
+      if (!this.model) throw new Error('Не удалось загрузить локальную модель');
+
+      onProgress?.('Локальный анализ объектов...');
+      const img = await this.fileToImage(imageFile);
+      const predictions = await this.model.detect(img);
+
+      const products = predictions
+        .filter((p: any) => p.score > 0.4)
+        .map((p: any) => ({
+          name: this.translateToRussian(p.class),
+          category: this.categorizeProduct(p.class),
+          confidence: p.score,
+          id: `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+        }));
+
+      return {
+        products,
+        success: true,
+        confidence: products.length > 0 ? Math.max(...products.map((p: any) => p.confidence)) : 0,
+        processingTime: Date.now() - startTime,
+        modelUsed: 'TensorFlow.js COCO-SSD (Local Fallback)'
+      };
+    } catch (e) {
+      console.error('[AIVisionService] Ошибка локального анализа:', e);
+      throw e;
     }
-    
-    return products;
   }
 
-  // Вспомогательный метод для конвертации файла в base64
-  private static async fileToBase64(file: File): Promise<string> {
+  private static fileToImage(file: File): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = e.target?.result as string;
+      };
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
   }
 
-  // Генерация ID продукта
-  private static generateProductId(name: string): string {
-    return name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  }
-
-  // Удаление дубликатов продуктов
-  private static removeDuplicates(products: DetectedProduct[]): DetectedProduct[] {
-    const seen = new Set();
-    return products.filter(product => {
-      const key = product.name.toLowerCase();
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-  }
-
-  // Перевод и категоризация продукта
-  private static translateAndCategorize(name: string): string {
-    const translations: { [key: string]: string } = {
-      'apple': 'Яблоко',
-      'banana': 'Банан',
-      'orange': 'Апельсин',
-      'tomato': 'Помидор',
-      'cucumber': 'Огурец',
-      'carrot': 'Морковь',
-      'potato': 'Картофель',
-      'onion': 'Лук',
-      'bread': 'Хлеб',
-      'cheese': 'Сыр',
-      'milk': 'Молоко',
-      'egg': 'Яйцо',
-      'meat': 'Мясо',
-      'fish': 'Рыба',
-      'chicken': 'Курица',
-      'beef': 'Говядина',
-      'pork': 'Свинина'
-    };
-    
-    return translations[name.toLowerCase()] || name;
-  }
-
-  // Категоризация продукта
+  // Категоризация
   private static categorizeProduct(name: string): string {
-    const lowerName = name.toLowerCase();
-    
-    if (lowerName.includes('яблоко') || lowerName.includes('банан') || lowerName.includes('апельсин') || 
-        lowerName.includes('фрукт')) {
-      return 'fruit';
-    }
-    
-    if (lowerName.includes('помидор') || lowerName.includes('огурец') || lowerName.includes('морковь') || 
-        lowerName.includes('картофель') || lowerName.includes('овощ')) {
-      return 'vegetable';
-    }
-    
-    if (lowerName.includes('мясо') || lowerName.includes('курица') || lowerName.includes('говядина') || 
-        lowerName.includes('свинина') || lowerName.includes('рыба')) {
-      return 'meat';
-    }
-    
-    if (lowerName.includes('молоко') || lowerName.includes('сыр') || lowerName.includes('яйцо')) {
-      return 'dairy';
-    }
-    
-    if (lowerName.includes('хлеб')) {
-      return 'bakery';
-    }
-    
+    const lower = name.toLowerCase();
+    if (['bottle', 'cup', 'wine glass', 'juice', 'water', 'milk', 'beer', 'wine', 'soda', 'beverage'].some(k => lower.includes(k))) return 'beverages';
+    if (['apple', 'banana', 'orange', 'fruit', 'pear', 'grape', 'strawberry', 'lemon', 'cherry'].some(k => lower.includes(k))) return 'fruits';
+    if (['broccoli', 'carrot', 'vegetable', 'tomato', 'cucumber', 'potato', 'onion', 'salad', 'pepper', 'garlic', 'cabbage', 'corn', 'zucchini', 'eggplant'].some(k => lower.includes(k))) return 'vegetables';
+    if (['sandwich', 'hot dog', 'pizza', 'donut', 'cake', 'egg', 'cheese', 'meat', 'chicken', 'fish', 'beef', 'pork', 'yogurt', 'ham', 'sausage', 'tofu'].some(k => lower.includes(k))) return 'protein';
+    if (['bread', 'pasta', 'rice', 'cereal', 'baguette', 'loaf', 'bun', 'toast', 'croissant'].some(k => lower.includes(k))) return 'carbs';
     return 'other';
   }
 
-  // Демо-режим когда API недоступен
-  private static getDemoResult(): AIVisionResult {
-    // Простая симуляция распознавания на основе имени файла
-    const demoProducts: DetectedProduct[] = [
-      {
-        id: 'demo-apple',
-        name: 'Яблоко',
-        category: 'fruit',
-        confidence: 0.85
-      },
-      {
-        id: 'demo-bread',
-        name: 'Хлеб',
-        category: 'bakery',
-        confidence: 0.78
-      }
-    ];
-    
-    return {
-      products: demoProducts,
-      success: true,
-      confidence: 0.8
+  // Словарь для перевода
+  private static translateToRussian(name: string): string {
+    const dict: Record<string, string> = {
+      'apple': 'Яблоко',
+      'banana': 'Банан',
+      'orange': 'Апельсин',
+      'broccoli': 'Брокколи',
+      'carrot': 'Морковь',
+      'hot dog': 'Хот-дог',
+      'pizza': 'Пицца',
+      'donut': 'Пончик',
+      'cake': 'Торт',
+      'sandwich': 'Сэндвич',
+      'bottle': 'Бутылка',
+      'wine glass': 'Бокал',
+      'cup': 'Чашка',
+      'bowl': 'Миска',
+      'knife': 'Нож',
+      'fork': 'Вилка',
+      'spoon': 'Ложка',
+      'egg': 'Яйцо',
+      'milk': 'Молоко',
+      'cheese': 'Сыр',
+      'slice of cheese': 'Ломтик сыра',
+      'bread': 'Хлеб',
+      'meat': 'Мясо',
+      'chicken': 'Курица',
+      'fish': 'Рыба',
+      'tomato': 'Помидор',
+      'cherry tomato': 'Помидор черри',
+      'cucumber': 'Огурец',
+      'potato': 'Картофель',
+      'onion': 'Лук',
+      'garlic': 'Чеснок',
+      'yogurt': 'Йогурт',
+      'juice': 'Сок',
+      'water': 'Вода',
+      'beer': 'Пиво',
+      'wine': 'Вино',
+      'strawberry': 'Клубника',
+      'lemon': 'Лимон',
+      'pear': 'Груша',
+      'grape': 'Виноград',
+      'pepper': 'Перец',
+      'baguette': 'Багет',
+      'baguette with seeds': 'Багет с семенами',
+      'tin loaf': 'Формовой хлеб',
+      'loaf': 'Буханка хлеба',
+      'bun': 'Булочка',
+      'ham': 'Ветчина',
+      'sausage': 'Колбаса',
+      'cabbage': 'Капуста',
+      'corn': 'Кукуруза',
+      'zucchini': 'Кабачок',
+      'eggplant': 'Баклажан',
+      'pasta': 'Макароны',
+      'rice': 'Рис'
     };
+    
+    let cleanName = name.toLowerCase().trim();
+    
+    // Пытаемся найти точное совпадение
+    if (dict[cleanName]) return dict[cleanName];
+
+    // Пытаемся найти по вхождению (например, если пришло "fresh garlic")
+    for (const key in dict) {
+      if (cleanName.includes(key) && key.length > 3) {
+        return dict[key];
+      }
+    }
+    
+    return name.charAt(0).toUpperCase() + name.slice(1);
   }
 }
 
