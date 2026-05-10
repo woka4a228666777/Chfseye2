@@ -19,7 +19,9 @@ export interface Recipe {
   missedIngredients: string[];
   readyInMinutes: number;
   servings: number;
+  instructions?: string[];
   sourceUrl?: string;
+  isFavorite?: boolean;
 }
 
 export interface ShoppingListItem {

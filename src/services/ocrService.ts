@@ -105,168 +105,106 @@ export class OCRService {
     let total: number | undefined;
     let date: Date | undefined;
 
+    // Ключевые слова для поиска продуктов (короткие названия для вывода)
+    const foodKeywords = [
+      'помидор', 'огурец', 'морковь', 'хлеб', 'батон', 'булка', 'молоко', 'кефир', 'сыр', 'яйцо',
+      'курица', 'мясо', 'говядина', 'свинина', 'рыба', 'макароны', 'паста', 'рис', 'гречка', 'крупа',
+      'масло', 'сметана', 'йогурт', 'творог', 'колбаса', 'ветчина', 'сосиски', 'картофель', 'картошка',
+      'лук', 'чеснок', 'перец', 'яблоко', 'банан', 'апельсин', 'лимон', 'сок', 'вода', 'чай', 'кофе',
+      'сахар', 'соль', 'мука', 'печенье', 'шоколад', 'конфеты', 'капуста', 'кабачок', 'баклажан', 'салат', 'петрушка', 'яйца'
+    ];
+
     // Расширенный список магазинов
     const storePatterns = [
       { pattern: /ПЯТЕРОЧКА|5KA/i, store: 'Пятерочка' },
       { pattern: /МАГНИТ|MAGNIT/i, store: 'Магнит' },
       { pattern: /ЛЕНТА|LENTA/i, store: 'Лента' },
       { pattern: /АШАН|AUCHAN|АШАН/i, store: 'Ашан' },
-      { pattern: /ПЕРЕКРЕСТОК|PERERESTOK/i, store: 'Перекресток' },
-      { pattern: /ДИКСИ|DIXY/i, store: 'Дикси' },
-      { pattern: /МЕТРО|METRO/i, store: 'Метро' },
-      { pattern: /О\s*КЕЙ|OKEY/i, store: 'ОКей' },
-      { pattern: /БИЛЛА|BILLA/i, store: 'Билла' },
-      { pattern: /СЕМЬЯ|SEMYA/i, store: 'Семья' }
+      { pattern: /ПЕРЕКРЕСТОК|PERERESTOK/i, store: 'Перекресток' }
     ];
 
-    // Список стоп-слов для фильтрации не-продуктов
-    const stopWords = [
-      'итого', 'сумма', 'всего', 'чек', 'касса', 'оплата', 'карта', 'наличные',
-      'сдача', 'банк', 'qr', 'code', 'скидка', 'акция', 'бонус', 'налог',
-      'total', 'sum', 'discount', 'tax', 'cash', 'card', 'payment', 'change',
-      'чек', 'номер', 'дата', 'время', 'продавец', 'покупатель', 'операция'
-    ];
+    const lowerText = text.toLowerCase();
 
+    // 1. Поиск магазина
+    for (const { pattern, store: storeName } of storePatterns) {
+      if (pattern.test(text)) {
+        store = storeName;
+        break;
+      }
+    }
+
+    // 2. Поиск продуктов по ключевым словам (возвращаем только само слово)
+    const foundKeywords = new Set<string>();
+    
+    // Проходим по каждой строке чека
     for (const line of lines) {
-      const cleanLine = line.trim();
-
-      // Поиск магазина
-      if (!store) {
-        for (const { pattern, store: storeName } of storePatterns) {
-          if (pattern.test(cleanLine)) {
-            store = storeName;
-            break;
-          }
-        }
-      }
-
-      // Поиск даты (разные форматы)
-      if (!date) {
-        const dateFormats = [
-          /(\d{4}[.-]\d{2}[.-]\d{2})/, // 2024-01-15
-          /(\d{2}[.-]\d{2}[.-]\d{4})/, // 15.01.2024
-          /(\d{1,2}\s+[а-я]+\s+\d{4})/i // 15 января 2024
-        ];
-        
-        for (const format of dateFormats) {
-          const dateMatch = cleanLine.match(format);
-          if (dateMatch) {
-            try {
-              date = new Date(dateMatch[1].replace(/\./g, '-'));
-              if (!isNaN(date.getTime())) break;
-            } catch (e) {
-              // Игнорируем ошибки парсинга даты
-            }
-          }
-        }
-      }
-
-      // Поиск итоговой суммы (разные форматы)
-      if (!total) {
-        const totalPatterns = [
-          /ИТОГ[\s:]*([\d\s.,]+)\s*р?\.?/i,
-          /СУММА[\s:]*([\d\s.,]+)\s*р?\.?/i,
-          /ВСЕГО[\s:]*([\d\s.,]+)\s*р?\.?/i,
-          /TOTAL[\s:]*([\d\s.,]+)/i,
-          /SUM[\s:]*([\d\s.,]+)/i,
-          /([\d\s.,]+)\s*р\.?\s*$/
-        ];
-        
-        for (const pattern of totalPatterns) {
-          const totalMatch = cleanLine.match(pattern);
-          if (totalMatch) {
-            const amountStr = totalMatch[1].replace(/\s/g, '').replace(',', '.');
-            total = parseFloat(amountStr);
-            if (!isNaN(total)) break;
-          }
-        }
-      }
-
-      // Улучшенное извлечение продуктов
-      const extractProductFromLine = (lineText: string): string | null => {
-        // Паттерны для продуктов в чеках
-        const productPatterns = [
-          // Формат: Название Цена (85.50)
-          /^([^\d]+?)\s+([\d\s.,]+)\s*р?\.?$/,
-          // Формат: Название - Цена
-          /^([^\d]+?)\s*-\s*([\d\s.,]+)\s*р?\.?$/,
-          // Формат: Название x Количество = Цена
-          /^([^\d]+?)\s*x\s*([\d\s.,]+)\s*=\s*([\d\s.,]+)/,
-          // Формат: Название Цена руб.
-          /^([^\d]+?)\s+([\d\s.,]+)\s*руб\.?/,
-          // Формат с количеством: Название Количество Цена
-          /^([^\d]+?)\s+([\d\s.,]+)\s+([\d\s.,]+)\s*р?\.?$/
-        ];
-
-        for (const pattern of productPatterns) {
-          const match = lineText.match(pattern);
-          if (match) {
-            let productName = match[1].trim();
-            
-            // Убираем номер позиции в начале
-            productName = productName.replace(/^\d+[\.\s)]*/, '').trim();
-            
-            // Убираем артикулы и коды
-            productName = productName.replace(/[A-Z0-9]{6,}/g, '').trim();
-            
-            // Фильтруем стоп-слова
-            const isStopWord = stopWords.some(word => 
-              productName.toLowerCase().includes(word.toLowerCase())
-            );
-            
-            if (!isStopWord && productName.length > 2 && 
-                !/^\d+[.,]?\d*$/.test(productName)) {
-              return productName;
-            }
-          }
-        }
-        
-        return null;
-      };
-
-      // Извлекаем продукт из строки
-      const product = extractProductFromLine(cleanLine);
-      if (product && !products.includes(product)) {
-        products.push(product);
-      }
-
-      // Дополнительно: поиск продуктов в строках без явных цен
-      if (!product && cleanLine.length > 3 && cleanLine.length < 50) {
-        const hasNumbers = /\d/.test(cleanLine);
-        const hasPriceIndicators = /р\.|руб|\$|€|₽/.test(cleanLine);
-        
-        if (!hasNumbers && !hasPriceIndicators) {
-          // Это может быть название продукта без цены
-          const potentialProduct = cleanLine
-            .replace(/^\d+[\.\s)]*/, '')
-            .replace(/[A-Z0-9]{6,}/g, '')
-            .trim();
-          
-          const isStopWord = stopWords.some(word => 
-            potentialProduct.toLowerCase().includes(word.toLowerCase())
-          );
-          
-          if (!isStopWord && potentialProduct.length > 2 && 
-              !products.includes(potentialProduct)) {
-            products.push(potentialProduct);
+      const cleanLine = line.toLowerCase();
+      
+      for (const keyword of foodKeywords) {
+        // Если слово найдено в строке и мы его еще не добавляли
+        if (cleanLine.includes(keyword.toLowerCase())) {
+          if (!foundKeywords.has(keyword.toLowerCase())) {
+            // Добавляем само ключевое слово (с большой буквы)
+            const displayName = keyword.charAt(0).toUpperCase() + keyword.slice(1);
+            products.push(displayName);
+            foundKeywords.add(keyword.toLowerCase());
           }
         }
       }
     }
 
-    // Фильтруем и сортируем продукты
-    const filteredProducts = products
-      .filter(product => product.length > 1)
-      .map(product => product.replace(/\s{2,}/g, ' ').trim())
-      .filter((product, index, array) => array.indexOf(product) === index) // Убираем дубликаты
-      .sort();
+    // 3. Дополнительный поиск даты и итога
+    for (const line of lines) {
+      const cleanLine = line.trim();
+      
+      // Поиск суммы
+      if (!total) {
+        const totalMatch = cleanLine.match(/ИТОГ[\s:]*([\d\s.,]+)/i) || cleanLine.match(/СУММА[\s:]*([\d\s.,]+)/i);
+        if (totalMatch) {
+          total = parseFloat(totalMatch[1].replace(/\s/g, '').replace(',', '.'));
+        }
+      }
+      
+      // Поиск даты
+      if (!date) {
+        const dateMatch = cleanLine.match(/(\d{2}[.-]\d{2}[.-]\d{4})/);
+        if (dateMatch) {
+          date = new Date(dateMatch[1].replace(/\./g, '-'));
+        }
+      }
+    }
 
-    return { 
-      products: filteredProducts, 
-      store, 
-      total, 
-      date 
-    };
+    // Фильтруем и очищаем
+    const filteredProducts = products
+      .map(p => this.cleanProductName(p))
+      .filter(p => p.length > 2);
+
+    return { products: filteredProducts, store, total, date };
+  }
+
+  // Очистка названия продукта от лишней информации
+  static cleanProductName(name: string): string {
+    let clean = name.toLowerCase();
+    
+    // Удаляем весовые характеристики (кг, г, мл, л)
+    clean = clean.replace(/\d+([.,]\d+)?\s*(кг|г|мл|л|шт|уп|пак|гр)\b/g, '');
+    clean = clean.replace(/\b\d+([.,]\d+)?\s*(kg|g|ml|l|pcs)\b/g, '');
+    
+    // Удаляем проценты жирности и т.п.
+    clean = clean.replace(/\d+([.,]\d+)?%/g, '');
+    
+    // Удаляем артикулы и технические коды (обычно длинные строки букв и цифр)
+    clean = clean.replace(/[a-z]*[0-9]{5,}[a-z]*/g, '');
+    
+    // Удаляем лишние символы и двойные пробелы
+    clean = clean.replace(/[.\-*+=:()]/g, ' ');
+    clean = clean.replace(/\s+/g, ' ').trim();
+    
+    // Если после очистки ничего не осталось или слишком коротко
+    if (clean.length < 2) return name;
+    
+    // Капитализация первого символа
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
   }
 
   // Генерация хэша файла для кэширования

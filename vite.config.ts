@@ -13,8 +13,8 @@ export default defineConfig({
         name: "Chef's Eye",
         short_name: "Chef's Eye",
         description: "Find recipes based on ingredients you have at home",
-        theme_color: '#10b981',
-        background_color: '#ffffff',
+        theme_color: '#9b1b30',
+        background_color: '#111827',
         display: 'standalone',
         orientation: 'portrait',
         icons: [

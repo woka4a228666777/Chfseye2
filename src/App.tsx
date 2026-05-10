@@ -13,10 +13,18 @@ function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   useEffect(() => {
     loadInitialData();
   }, []);
+
+  const closeMenu = () => setIsMenuOpen(false);
+
+  const navigateTo = (view: 'dashboard' | 'manual' | 'receipt' | 'photo' | 'recipes' | 'shopping') => {
+    setCurrentView(view);
+    closeMenu();
+  };
 
   const loadInitialData = async () => {
     try {
@@ -60,57 +68,123 @@ function App() {
     }
   };
 
+  const handleAddProducts = async (newProducts: Product[]) => {
+    try {
+      for (const product of newProducts) {
+        await storage.addProduct(product);
+      }
+      setProducts(prev => [...prev, ...newProducts]);
+    } catch (error) {
+      console.error('Failed to add products:', error);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600"></div>
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-rose-500"></div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <header className="fixed w-full padding bg-white shadow-sm border-b min-h-[120px] border-gray-200 flex items-center justify-center z-50">
+        <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <h1 className="text-xl font-semibold text-gray-900">Chef's Eye</h1>
-            <nav className="flex space-x-4">
+            <div className="flex items-center cursor-pointer" onClick={() => navigateTo('dashboard')}>
+              <img src="/ChefsEyeLogo.png" alt="Chef's Eye" className="h-[100px] w-auto" />
+            </div>
+
+            {/* Desktop Navigation */}
+            <nav className="hidden min-[601px]:flex space-x-2">
               <button
-                onClick={() => setCurrentView('dashboard')}
-                className={`px-3 py-2 rounded-md text-sm font-medium ${
+                onClick={() => navigateTo('dashboard')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                   currentView === 'dashboard'
-                    ? 'bg-primary-100 text-primary-700'
-                    : 'text-gray-500 hover:text-gray-700'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-gray-600 hover:text-rose-600 hover:bg-gray-100'
                 }`}
               >
                 Главная
               </button>
               <button
-                onClick={() => setCurrentView('recipes')}
-                className={`px-3 py-2 rounded-md text-sm font-medium ${
+                onClick={() => navigateTo('recipes')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                   currentView === 'recipes'
-                    ? 'bg-primary-100 text-primary-700'
-                    : 'text-gray-500 hover:text-gray-700'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-gray-600 hover:text-rose-600 hover:bg-gray-100'
                 }`}
               >
                 Рецепты
               </button>
               <button
-                onClick={() => setCurrentView('shopping')}
-                className={`px-3 py-2 rounded-md text-sm font-medium ${
+                onClick={() => navigateTo('shopping')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                   currentView === 'shopping'
-                    ? 'bg-primary-100 text-primary-700'
-                    : 'text-gray-500 hover:text-gray-700'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-gray-600 hover:text-rose-600 hover:bg-gray-100'
                 }`}
               >
                 Список покупок
               </button>
             </nav>
+
+            {/* Mobile Burger Button */}
+            <button
+              onClick={() => setIsMenuOpen(!isMenuOpen)}
+              className="flex min-[601px]:hidden p-2 rounded-lg text-gray-600 hover:bg-gray-100 transition-colors"
+              aria-label="Toggle menu"
+            >
+              <div className="w-6 h-5 flex flex-col justify-between">
+                <span className={`w-full h-0.5 bg-rose-600 rounded-full transition-all ${isMenuOpen ? 'rotate-45 translate-y-2' : ''}`}></span>
+                <span className={`w-full h-0.5 bg-rose-600 rounded-full transition-all ${isMenuOpen ? 'opacity-0' : ''}`}></span>
+                <span className={`w-full h-0.5 bg-rose-600 rounded-full transition-all ${isMenuOpen ? '-rotate-45 -translate-y-2.5' : ''}`}></span>
+              </div>
+            </button>
           </div>
         </div>
+
+        {/* Mobile Navigation Menu */}
+        {isMenuOpen && (
+          <div className="absolute top-full left-0 right-0 bg-white shadow-lg border-b border-gray-200 min-[601px]:hidden animate-in slide-in-from-top duration-200">
+            <nav className="flex flex-col p-4 space-y-2">
+              <button
+                onClick={() => navigateTo('dashboard')}
+                className={`w-full text-left px-4 py-3 rounded-xl text-sm font-bold transition-all ${
+                  currentView === 'dashboard'
+                    ? 'bg-rose-50 text-rose-600 border border-rose-100'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                🏠 Главная
+              </button>
+              <button
+                onClick={() => navigateTo('recipes')}
+                className={`w-full text-left px-4 py-3 rounded-xl text-sm font-bold transition-all ${
+                  currentView === 'recipes'
+                    ? 'bg-rose-50 text-rose-600 border border-rose-100'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                🍳 Рецепты
+              </button>
+              <button
+                onClick={() => navigateTo('shopping')}
+                className={`w-full text-left px-4 py-3 rounded-xl text-sm font-bold transition-all ${
+                  currentView === 'shopping'
+                    ? 'bg-rose-50 text-rose-600 border border-rose-100'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                🛒 Список покупок
+              </button>
+            </nav>
+          </div>
+        )}
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pt-[140px]">
         {currentView === 'dashboard' && (
           <Dashboard
             products={products}
@@ -152,12 +226,16 @@ function App() {
             products={products}
             recipes={recipes}
             onRecipesUpdate={setRecipes}
+            onAddProduct={handleAddProduct}
           />
         )}
 
         {currentView === 'shopping' && (
-          <ShoppingList onBack={() => setCurrentView('dashboard')} />
-        )}
+        <ShoppingList 
+          onBack={() => setCurrentView('dashboard')}
+          onAddProducts={handleAddProducts}
+        />
+      )}
       </main>
     </div>
   );

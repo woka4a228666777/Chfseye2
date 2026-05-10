@@ -6,7 +6,8 @@ const DB_KEYS = {
   RECEIPTS: 'receipts',
   RECIPES: 'recipes',
   SHOPPING_LIST: 'shopping-list',
-  RECIPE_CACHE: 'recipe-cache'
+  RECIPE_CACHE: 'recipe-cache',
+  FAVORITE_RECIPES: 'favorite-recipes'
 };
 
 export const storage = {
@@ -88,5 +89,27 @@ export const storage = {
     const list = await this.getShoppingList();
     const activeItems = list.filter(item => !item.completed);
     await this.saveShoppingList(activeItems);
+  },
+
+  // Favorite Recipes
+  async getFavorites(): Promise<number[]> {
+    return (await get(DB_KEYS.FAVORITE_RECIPES)) || [];
+  },
+
+  async toggleFavorite(recipeId: number): Promise<boolean> {
+    const favorites = await this.getFavorites();
+    const index = favorites.indexOf(recipeId);
+    let isFavorite = false;
+    
+    if (index === -1) {
+      favorites.push(recipeId);
+      isFavorite = true;
+    } else {
+      favorites.splice(index, 1);
+      isFavorite = false;
+    }
+    
+    await set(DB_KEYS.FAVORITE_RECIPES, favorites);
+    return isFavorite;
   }
 };
